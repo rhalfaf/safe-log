@@ -49,8 +49,7 @@ public final class SafeLog {
         try {
             for (RecordComponent component : type.getRecordComponents()) {
                 Object value = readValue(component, object);
-                Sensitive sensitive = component.getAnnotation(Sensitive.class);
-                String renderedValue = renderValue(value, sensitive, activeRecords, depth);
+                String renderedValue = renderValue(component, value, activeRecords, depth);
                 result.add(component.getName() + "=" + renderedValue);
             }
             return result.toString();
@@ -67,17 +66,34 @@ public final class SafeLog {
         }
     }
 
-    private static String renderValue(Object value, Sensitive sensitive, Set<Object> activeRecords, int depth) {
+    private static String renderValue(RecordComponent component, Object value, Set<Object> activeRecords, int depth) {
+        Sensitive sensitive = component.getAnnotation(Sensitive.class);
+        if (value == null) {
+            return "null";
+        }
+
+        if (value.getClass().isRecord()) {
+            return renderNestedRecord(component, value, sensitive, activeRecords, depth);
+        }
+
         if (sensitive != null) {
             String maskedValue = getMaskingStrategy(sensitive.value()).mask(value);
             return escapeControlCharacters(maskedValue);
         }
 
-        if (value != null && value.getClass().isRecord()) {
+        return escapeControlCharacters(String.valueOf(value));
+    }
+
+    private static String renderNestedRecord(RecordComponent component, Object value, Sensitive sensitive, Set<Object> activeRecords, int depth) {
+        if (sensitive == null) {
             return stringifyRecord(value, activeRecords, depth + 1);
         }
+        return switch (sensitive.value()) {
+            case FULL -> FULL_MASK.mask(value);
+            case EMAIL, KEEP_LAST_4 ->
+                    throw new IllegalArgumentException("Masking strategy " + sensitive.value() + " cannot be applied to record component: " + component.getName());
 
-        return escapeControlCharacters(String.valueOf(value));
+        };
     }
 
     private static MaskingStrategy getMaskingStrategy(MaskType maskType) {

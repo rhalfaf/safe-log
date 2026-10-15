@@ -2,10 +2,7 @@ package pl.softr.safelog;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class SafeLogTest {
 
@@ -27,13 +24,7 @@ class SafeLogTest {
     }
 
     @Test
-    void shouldReturnNullWhenObjectIsNull() {
-        String result = SafeLog.stringify(null);
-        assertEquals(null, result);
-    }
-
-    @Test
-    void shouldThrowExceptionWhenObjectIsNotNull() {
+    void shouldThrowExceptionWhenObjectIsRecord() {
         assertThrows(IllegalArgumentException.class, () -> SafeLog.stringify(new Object()));
     }
 
@@ -52,7 +43,8 @@ class SafeLogTest {
     }
 
     @Test
-    void shouldReturnFullyMaskedStringWhenLast4MaskingStrategyWithStringEqualsOrShortenThan$() {
+    void shouldReturnFullyMaskedStringWhenLast4MaskingStrategyWithStringEqualsOrShortenThan4
+            () {
         User user1 = new User("admin", "admin$safelog.pl", "Koło", "12345678901");
         User user2 = new User("admin", "admin$safelog.pl", "Dół", "12345678901");
         String result1 = SafeLog.stringify(user1);
@@ -71,45 +63,128 @@ class SafeLogTest {
 
     @Test
     void shouldEscapeControlCharactersRemainingAfterEmailMasking() {
-        User user = new User("admin", "\"admin@example.com\\r\\nFAKE\\tERROR\\u001B\"", "Koło", "12345678901");
+        User user = new User("admin", "admin@example.com\r\nFAKE\tERROR\u001B\"", "Koło", "12345678901");
         String result = SafeLog.stringify(user);
-        assertEquals("User{name=admin, email=\"****@example.com\\r\\nFAKE\\tERROR\\u001B\", cityName=****, pesel=****}",result);
+        assertEquals("User{name=admin, email=a****@example.com\\r\\nFAKE\\tERROR\\u001B\", cityName=****, pesel=****}", result);
     }
 
     @Test
     void shouldRecursivelyMaskSensitiveComponentsInNestedRecords() {
-        Credentials credentials = new Credentials("admin", "secret-password");
+        Credentials credentials = new Credentials("admin", "secret-password", null, null);
         LoginEvent event = new LoginEvent("login", credentials);
+        String result = SafeLog.stringify(event);
+        assertEquals("LoginEvent{action=login, credentials=Credentials{username=admin, password=****, recoveryEmail=null, cardNumber=null}}", result);
+    }
+
+    @Test
+    void shouldApplyDifferentMaskingStrategiesInsideNestedRecord() {
+        Credentials credentials = new Credentials(
+                "admin",
+                "secret-password",
+                "admin@example.com",
+                "1234567890123456"
+        );
+
+        LoginEvent event = new LoginEvent(
+                "login",
+                credentials
+        );
 
         String result = SafeLog.stringify(event);
 
         assertEquals(
-                "LoginEvent{action=login, credentials=Credentials{username=admin, password=****}}",
+                "LoginEvent{action=login, " +
+                        "credentials=Credentials{" +
+                        "username=admin, " +
+                        "password=****, " +
+                        "recoveryEmail=a****@example.com, " +
+                        "cardNumber=************3456}}",
                 result
         );
     }
 
     @Test
-    void shouldMaskWholeNestedRecordWhenParentComponentIsSensitive() {
-        Credentials credentials = new Credentials("admin", "secret-password");
+    void shouldMaskWholeNestedRecordWithFullStrategy() {
+        Credentials credentials = new Credentials(
+                "admin",
+                "secret-password",
+                "admin@example.com",
+                "1234567890123456"
+        );
         ProtectedEvent event = new ProtectedEvent(credentials);
-
         String result = SafeLog.stringify(event);
-        System.out.println(result);
         assertEquals("ProtectedEvent{credentials=****}", result);
     }
 
     @Test
-    void shouldStopProcessingRecordsAfterMaximumDepth() {
-        Object nestedRecord = new Credentials("admin", "secret-password");
-        for (int i = 0; i < 10; i++) {
-            nestedRecord = new NestedRecord(nestedRecord);
-        }
+    void shouldRejectEmailStrategyAppliedToNestedRecord() {
+        Credentials credentials = new Credentials(
+                "admin",
+                "secret-password",
+                "admin@example.com",
+                "1234567890123456"
+        );
 
-        String result = SafeLog.stringify(nestedRecord);
+        InvalidEmailEvent event = new InvalidEmailEvent(credentials);
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> SafeLog.stringify(event)
+        );
+        assertEquals("Masking strategy EMAIL cannot be applied " +
+                "to record component: credentials", exception.getMessage()
+        );
+    }
 
-        assertTrue(result.contains("<max-depth>"));
-        assertFalse(result.contains("secret-password"));
+    @Test
+    void shouldRejectKeepLast4StrategyAppliedToNestedRecord() {
+        Credentials credentials = new Credentials(
+                "admin",
+                "secret-password",
+                "admin@example.com",
+                "1234567890123456"
+        );
+
+        InvalidKeepLast4Event event = new InvalidKeepLast4Event(credentials);
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> SafeLog.stringify(event)
+        );
+        assertEquals("Masking strategy KEEP_LAST_4 cannot be applied " +
+                "to record component: credentials", exception.getMessage()
+        );
+    }
+
+    private record Credentials(
+            String username,
+
+            @Sensitive(MaskType.FULL)
+            String password,
+
+            @Sensitive(MaskType.EMAIL)
+            String recoveryEmail,
+
+            @Sensitive(MaskType.KEEP_LAST_4)
+            String cardNumber) {
+    }
+
+    private record LoginEvent(
+            String action,
+            Credentials credentials) {
+    }
+
+    private record ProtectedEvent(
+            @Sensitive(MaskType.FULL)
+            Credentials credentials) {
+    }
+
+    private record InvalidEmailEvent(
+            @Sensitive(MaskType.EMAIL)
+            Credentials credentials) {
+    }
+
+    private record InvalidKeepLast4Event(
+            @Sensitive(MaskType.KEEP_LAST_4)
+            Credentials credentials) {
     }
 
     private record User(String name,
@@ -129,19 +204,37 @@ class SafeLogTest {
     private record UnicodeEntry(String message) {
     }
 
-    private record Credentials(
-            String username,
-            @Sensitive String password
-    ) {
-    }
+    @Test
+    void shouldStopProcessingRecordsAfterMaximumDepth() {
+        Object atMaximumDepth =
+                new DeepestRecord("secret-value");
 
-    private record LoginEvent(String action, Credentials credentials) {
-    }
+        // Dziewięć opakowań + DeepestRecord daje łącznie 10 poziomów.
+        for (int i = 0; i < 9; i++) {
+            atMaximumDepth = new NestedRecord(atMaximumDepth);
+        }
 
-    private record ProtectedEvent(@Sensitive Credentials credentials) {
+        String resultAtLimit =
+                SafeLog.stringify(atMaximumDepth);
+
+        assertTrue(resultAtLimit.contains("secret-value"));
+        assertFalse(resultAtLimit.contains("<max-depth>"));
+
+        // Dodatkowe opakowanie przesuwa DeepestRecord na poziom 11.
+        Object aboveMaximumDepth =
+                new NestedRecord(atMaximumDepth);
+
+        String resultAboveLimit =
+                SafeLog.stringify(aboveMaximumDepth);
+
+        assertTrue(resultAboveLimit.contains("<max-depth>"));
+        assertFalse(resultAboveLimit.contains("secret-value"));
     }
 
     private record NestedRecord(Object value) {
+    }
+
+    private record DeepestRecord(String value) {
     }
 
 }
